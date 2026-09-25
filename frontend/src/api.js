@@ -39,4 +39,38 @@ export const api = {
   crossValidate: (id, probes, node = 'a') =>
     req(`/snapshots/${id}/cross-validate`, { method: 'POST', body: { probes, node } }),
   runs: () => req('/runs'),
+
+  // time-bounded exceptions
+  publishBaseline: (id, label = '', created_by = 'lab') =>
+    req(`/policies/${id}/baseline/publish`, { method: 'POST', body: { label, created_by } }),
+  getBaseline: (id) => req(`/policies/${id}/baseline`),
+  listExceptions: (pid) => req(`/policies/${pid}/exceptions`),
+  createException: (pid, body) =>
+    req(`/policies/${pid}/exceptions`, { method: 'POST', body }),
+  getException: (id) => req(`/exceptions/${id}`),
+  patchException: (id, body) =>
+    req(`/exceptions/${id}`, { method: 'PATCH', body }),
+  deleteException: (id) =>
+    req(`/exceptions/${id}`, { method: 'DELETE' }),
+  exAction: (id, action, body = {}) =>
+    req(`/exceptions/${id}/${action}`, { method: 'POST', body }),
+  exHistory: (id) => req(`/exceptions/${id}/history`),
+  exPreview: (id, baseline_snapshot_id) =>
+    req(`/exceptions/${id}/preview` +
+      (baseline_snapshot_id ? `?baseline_snapshot_id=${baseline_snapshot_id}` : '')),
+  effective: (pid, at) =>
+    req(`/policies/${pid}/effective` + (at ? `?at=${encodeURIComponent(at)}` : '')),
+  effectiveClassify: (pid, prefix, at) =>
+    req(`/policies/${pid}/effective/classify`, { method: 'POST', body: { prefix, at } }),
+  effectiveCrossValidate: (pid, probes, node, at) =>
+    req(`/policies/${pid}/effective/cross-validate`,
+      { method: 'POST', body: { probes, node, at } }),
+  timeline: (pid, at) =>
+    req(`/policies/${pid}/timeline` + (at ? `?at=${encodeURIComponent(at)}` : '')),
+  tick: (at) => req('/exceptions/tick', { method: 'POST', body: { at } }),
+  clock: () => req('/clock'),
+  clockFreeze: (at) => req('/clock/freeze', { method: 'POST', body: { at } }),
+  clockAdvance: (seconds, at) =>
+    req('/clock/advance', { method: 'POST', body: { seconds, at } }),
+  clockReset: () => req('/clock/reset', { method: 'POST' }),
 };

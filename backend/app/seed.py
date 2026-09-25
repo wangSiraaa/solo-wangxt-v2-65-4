@@ -12,7 +12,48 @@ list, so it is fully replayable.
 """
 from __future__ import annotations
 
-from . import db as dbmod, service
+import datetime as dt
+
+from . import clock, db as dbmod, service
+from . import exceptions_service as xs
+
+
+def _demo_exceptions(s, dbp):
+    """A small, re-runnable demo set of time-bounded exceptions."""
+    if s.query(dbmod.PolicyException).filter_by(policy_id=dbp.id).first():
+        return
+    base = xs.publish_baseline(s, dbp.id, label="baseline")
+    now = clock.now()
+
+    def mk(name, action, prio, hours_start, hours_end, matches,
+           reason, go):
+        ex = xs.create_exception(
+            s, dbp.id, name=name, action=action, priority=prio,
+            start_at=now + dt.timedelta(hours=hours_start),
+            end_at=now + dt.timedelta(hours=hours_end),
+            matches=matches, reason=reason, requested_by="seed")
+        if go == "scheduled":
+            xs.submit(s, ex.id, actor="seed")
+            xs.approve(s, ex.id, approver="seed-approver", at=now)
+        return ex
+
+    if dbp.family == 4:
+        # approved future maintenance permit, with an overlapping narrower
+        # higher-priority deny to show deterministic priority composition
+        mk("maint-permit-dc100", "permit", 200, 1, 3,
+           [{"prefix": "192.168.0.0/16", "le": 24}],
+           "维护窗口：临时放行 192.168.0.0/16 le24", "scheduled")
+        mk("guard-dc100", "deny", 100, 1, 3,
+           [{"prefix": "192.168.100.0/24"}],
+           "重叠例外：关键 DC /24 维护期间仍拒绝（高优先级）", "scheduled")
+        mk("draft-emergency-8", "permit", 300, 0, 1,
+           [{"prefix": "8.8.8.0/24"}],
+           "草稿：紧急临时放行（尚未提交）", "draft")
+    else:
+        mk("maint-v6-sites", "permit", 100, 1, 3,
+           [{"prefix": "2001:db8::/32", "le": 48}],
+           "维护窗口：临时放行 IPv6 站点 /48", "scheduled")
+    _ = base
 
 
 SEEDS = {
@@ -182,6 +223,12 @@ def seed_all() -> None:
                     )
                     s.add(sc)
                     s.commit()
+
+        # demo time-bounded exceptions on the over-permit scenarios
+        for pname in ("over-permit", "over-permit-v6"):
+            dbp = s.query(dbmod.Policy).filter_by(name=pname).first()
+            if dbp is not None:
+                _demo_exceptions(s, dbp)
     finally:
         s.close()
 

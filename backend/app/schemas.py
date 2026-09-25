@@ -63,3 +63,72 @@ class NeighborIn(BaseModel):
     inbound_policy: Optional[str] = None
     outbound_policy: Optional[str] = None
     description: str = ""
+
+
+# ----------------------------------------------------------- time exceptions
+class MatchScopeIn(BaseModel):
+    prefix: str
+    ge: Optional[int] = Field(default=None, ge=0, le=128)
+    le: Optional[int] = Field(default=None, ge=0, le=128)
+
+
+class ExceptionIn(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    action: str = Field(pattern="^(permit|deny)$")
+    start_at: str            # ISO-8601, UTC preferred
+    end_at: str
+    matches: List[MatchScopeIn]
+    reason: str = ""
+    priority: int = Field(default=100, ge=1, le=10_000_000)
+    requested_by: str = "lab"
+    snapshot_id: Optional[int] = None
+
+
+class ExceptionPatchIn(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    action: Optional[str] = Field(default=None, pattern="^(permit|deny)$")
+    start_at: Optional[str] = None
+    end_at: Optional[str] = None
+    matches: Optional[List[MatchScopeIn]] = None
+    reason: Optional[str] = None
+    priority: Optional[int] = Field(default=None, ge=1, le=10_000_000)
+
+
+class ActorIn(BaseModel):
+    actor: str = "lab"
+    at: Optional[str] = None
+
+
+class ApproveIn(BaseModel):
+    approver: str = "approver"
+    at: Optional[str] = None
+
+
+class ReviewIn(BaseModel):
+    reviewer: str = "reviewer"
+    at: Optional[str] = None
+
+
+class RevokeIn(BaseModel):
+    actor: str = "operator"
+    reason: str = ""
+    at: Optional[str] = None
+
+
+class AtIn(BaseModel):
+    at: Optional[str] = None
+
+
+class TickIn(BaseModel):
+    at: Optional[str] = None
+
+
+class BaselinePublishIn(BaseModel):
+    label: str = ""
+    created_by: str = "lab"
+
+
+class CrossValidateEffectiveIn(BaseModel):
+    probes: List[str]
+    node: str = "a"
+    at: Optional[str] = None

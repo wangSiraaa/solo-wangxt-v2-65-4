@@ -2,10 +2,10 @@
 
 在**发布前**离线看清前缀策略会放行/拒绝哪些前缀。完全本地，**不连接任何生产设备**。
 
-* **React**：前缀树 + 命中链可视化、规则编辑、遮蔽检查、语义差异（最小见证前缀集）、有序回放、FRR 交叉验证
+* **React**：前缀树 + 命中链可视化、规则编辑、遮蔽检查、语义差异（最小见证前缀集）、有序回放、**时效例外时间线 / 语义影响**、FRR 交叉验证
 * **FastAPI**：REST API，判定核心用 Python 标准库 **`ipaddress`**
-* **PostgreSQL**：邻居、有序规则、不可变配置快照、场景、验证运行（也可用 SQLite 免依赖运行）
-* **FRRouting 容器**（router-a / router-b，隔离 bridge）：用 FRR 自己的 prefix-list 匹配器做交叉验证
+* **PostgreSQL**：邻居、有序规则、不可变配置快照、场景、验证运行、**时效例外与只追加状态历史**（也可用 SQLite 免依赖运行）
+* **FRRouting 容器**（router-a / router-b，隔离 bridge）：用 FRR 自己的 prefix-list 匹配器做交叉验证（含**当前合成配置**）
 
 ---
 
@@ -64,7 +64,60 @@
 
 FRR 语义已对照其源码 `lib/plist.c` 核对（包含关系、无 ge/le 精确匹配、窗口、首条最小 seq、未命中 DENY）。注意 FRR 对**空** prefix-list 返回 PERMIT，因此空策略会被报为 lab setup error 而非静默一致。
 
+**当前合成配置**（基线 + 生效例外）可用
+`POST /api/policies/{id}/effective/cross-validate` 用一次性名称 `xc-p<id>`
+渲染成单条 prefix-list 下发验证：例外条目按优先级排在前、基线条目原样在
+后，seq 重排为稠密 1..N（FRR 安全），命中结果再映射回“例外/基线”归属；
+验证结束删除该临时列表，全程不修改任何基线规则。
+
 传输默认 `docker exec`（`RLAB_FRR_TRANSPORT=docker`），也可切到 SSH（`RLAB_FRR_TRANSPORT=ssh`，见 `backend/app/config.py`）。容器不在线时相关测试自动 skip，UI 显示离线徽标。
+
+## 4a. 时效策略例外（维护窗口）
+
+维护窗口中临时放行/拒绝少量前缀，窗口结束自动恢复基线；**不改写任何原规则**。
+
+### 绑定与生命周期
+
+每个例外绑定：**不可变基线快照** `snapshot_id`（payload 自包含，快照永不重写）、
+地址族（与基线一致，v4/v6 不混）、有序**匹配范围** `(prefix, ge, le)`、动作、
+优先级、`[start_at, end_at)`（**边界时刻**：start 生效、end 即恢复，半开区间）、
+理由/申请人、审批状态。生命周期：
+
+```
+draft ─submit→ pending ─approve→ scheduled ─start→ active ─end→ expired
+                  │                   │              │
+                  └───────────────────┴──── revoke ←─┘
+```
+
+审批时窗口若已开始则直接 active，已结束则拒绝；任意终态（expired/revoked）不可复活。
+
+### 合成与命中链
+
+合成顺序是**全序且确定**的：例外条目按 `(priority 升序, 例外 id 升序, 匹配序号)`
+排在最前，基线规则按原 seq 排在其后，隐式默认动作不变。排前面是因为
+prefix-list 首条匹配即终止——例外正是要在其范围内压过基线。命中链对每一条
+标注 `exception #id / baseline / default` 归属；重叠例外由优先级与 id 决胜。
+语义影响仍走 `trie.py` 的精确单元切分，输出**最小见证前缀集**（动作没变化的
+区域，如“基线 deny 上再叠 deny”，不产生见证）。
+
+### 幂等、迟到事件、基线替代
+
+* ACTIVATED / EXPIRED / REVOKED 用**状态条件 + 固定幂等键**双保险：重复或乱序
+  调用、窗口结束后才到达的迟到激活、进程重启后的补跑，都不改变终态，
+  `exception_events` 中每类生命周期事件**至多一行**。
+* API 启动时与后台 ticker（`scheduler.py`，`RLAB_TICK_INTERVAL`）都会执行
+  幂等补跑 `run_due_ticks()`；“重启后补跑过期”因此只生成一次历史。
+* **基线被替代时**：发布新基线只移动 `policies.baseline_snapshot_id` 指针；
+  尚未生效（pending/scheduled）且绑定旧快照的例外置 `needs_review`（待复核），
+  tick 不会激活它们，合成视图也不纳入；必须对**新基线重新预览**并人工
+  “确认复核”后才允许到点生效。已 active 的例外不中断，草稿不受影响。
+  旧快照 payload 保持不变，既有快照差异与有序探针回放照常工作。
+
+### 可注入时钟
+
+所有时效判定经 `app/clock.py`（默认系统 UTC 时钟）。测试/实验室可冻结
+（`POST /api/clock/freeze`）、推进（`POST /api/clock/advance`，推进后自动补跑）、
+重置；服务层函数也都接受显式 `at=`。
 
 ## 5. 快速开始
 
@@ -110,7 +163,9 @@ python -m pytest tests/ -q
 * `test_engine.py`：精确匹配、ge/le 窗口、首条匹配、默认拒绝、v4/v6 隔离、三个示例决策；
 * `test_properties.py`：在完整枚举的 /0../6（v4）与 /32../34（v6）格子上，对数百个随机策略用暴力预言机验证**遮蔽判定**与**最小见证集**逐区域一致（非采样）；
 * `test_api.py`：编辑→快照→差异→回放的端到端 REST；
-* `test_frr_consistency.py`：FRR 输出解析、随机 400 例与 FRR `prefix_list_apply` 移植模型逐条一致；`test_live_frr_consistency` 在检测到容器时自动对真实 FRR 运行。
+* `test_exceptions.py` / `test_exceptions_api.py`：时效例外验收——边界生效与自动恢复、重叠例外确定性结果与最小见证、重复/乱序激活过期终态不变、基线替代进入待复核且旧快照不被覆盖、重启补跑过期仅一条历史、合成配置与 FRR 移植模型一致；
+* `test_frr_consistency.py`：FRR 输出解析、随机 400 例与 FRR `prefix_list_apply` 移植模型逐条一致；`test_live_frr_consistency` 在检测到容器时自动对真实 FRR 运行；
+* `test_frr_exceptions.py`：把**当前合成配置**（基线+生效例外）下发到真实本地 FRR 容器验证后删除（无容器自动 skip）。
 
 ## 7. 主要 API
 
@@ -128,15 +183,26 @@ python -m pytest tests/ -q
 | POST | `/api/snapshots/{id}/cross-validate` | 推送 FRR 容器并逐条比对 |
 | GET/POST | `/api/scenarios`、`/api/scenarios/{id}/replay` | 场景（输入+两个快照+结果） |
 | GET/POST | `/api/neighbors` | 本地实验室邻居 |
+| GET/POST | `/api/policies/{id}/baseline`、`.../baseline/publish` | 当前不可变基线 / 冻结当前规则为新基线 |
+| GET/POST | `/api/policies/{id}/exceptions`、`/api/exceptions/{id}` | 时效例外 CRUD（PATCH 仅草稿） |
+| POST | `/api/exceptions/{id}/submit|approve|review|revoke|activate|expire` | 生命周期操作（激活/过期/撤销幂等） |
+| GET | `/api/exceptions/{id}/history`、`/api/exceptions/{id}/preview` | 只追加状态历史、语义影响预览（可指定基线快照） |
+| POST | `/api/exceptions/tick` | 幂等补跑所有到期激活/过期 |
+| GET | `/api/policies/{id}/timeline` | 时间线：边界时刻最终生效集合 + 全事件 |
+| GET/POST | `/api/policies/{id}/effective`、`.../effective/classify`、`.../effective/cross-validate` | 当前合成配置、分层命中链、FRR 验证 |
+| GET/POST | `/api/clock`、`/api/clock/freeze|advance|reset` | 可注入时钟（实验室/测试） |
 | GET | `/api/frr/status`、`/api/runs` | 容器在线状态、历史验证运行 |
 
 ## 目录
 
 ```
 backend/app/   engine.py(匹配/遮蔽) trie.py(精确单元+最小见证) service.py db.py
-               validate.py frr_bridge.py treeview.py routers/api.py seed.py
-frontend/src/  App.jsx + components/(PolicyEditor/TrieView/DiffView/ReplayLab/Neighbors)
+               exceptions_service.py(时效例外生命周期/合成/时间线) clock.py(注入时钟)
+               scheduler.py(幂等补跑) validate.py frr_bridge.py treeview.py
+               routers/(api.py, exceptions_api.py) seed.py
+frontend/src/  App.jsx + components/(PolicyEditor/TrieView/DiffView/ReplayLab/
+               ExceptionsLab/Neighbors)
 frr/           两个节点的 daemons/vtysh/frr.conf 与独立 docker-compose
-tests/         引擎/属性/API/FRR 一致性
+tests/         引擎/属性/API/FRR 一致性/时效例外(服务+API+真实FRR)
 docker-compose.yml   postgres + backend + router-a/b
 ```
