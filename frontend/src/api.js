@@ -39,4 +39,36 @@ export const api = {
   crossValidate: (id, probes, node = 'a') =>
     req(`/snapshots/${id}/cross-validate`, { method: 'POST', body: { probes, node } }),
   runs: () => req('/runs'),
+
+  // ----- time-bounded maintenance exceptions -----
+  clock: () => req('/clock'),
+  setClock: (at, reset = false) => req('/clock', { method: 'POST', body: { at, reset } }),
+  listExceptions: (pid) => req(`/policies/${pid}/exceptions`),
+  createException: (pid, b) =>
+    req(`/policies/${pid}/exceptions`, { method: 'POST', body: b }),
+  getException: (id) => req(`/exceptions/${id}`),
+  editException: (id, b) => req(`/exceptions/${id}`, { method: 'PATCH', body: b }),
+  exceptionAction: (id, action, body = {}) =>
+    req(`/exceptions/${id}/${action}`, { method: 'POST', body }),
+  exceptionEvents: (id) => req(`/exceptions/${id}/events`),
+  previewException: (id, snapshotId) =>
+    req(`/exceptions/${id}/preview${snapshotId ? `?snapshot_id=${snapshotId}` : ''}`),
+  previewCandidate: (pid, b) =>
+    req(`/policies/${pid}/exceptions/preview`, { method: 'POST', body: b }),
+  reconfirmException: (id, snapshotId, signature, witnessCount) =>
+    req(`/exceptions/${id}/reconfirm`, {
+      method: 'POST',
+      body: { snapshot_id: snapshotId, signature, witness_count: witnessCount },
+    }),
+  effective: (pid, at) =>
+    req(`/policies/${pid}/effective${at ? `?at=${encodeURIComponent(at)}` : ''}`),
+  effectiveClassify: (pid, prefix, at) =>
+    req(`/policies/${pid}/effective/classify`, {
+      method: 'POST', body: { prefix, at: at || null },
+    }),
+  effectiveCrossValidate: (pid, probes, at, node = 'a') =>
+    req(`/policies/${pid}/effective/cross-validate`, {
+      method: 'POST', body: { probes, at: at || null, node },
+    }),
+  sweep: (at = null) => req('/exceptions/sweep/run', { method: 'POST', body: { at } }),
 };

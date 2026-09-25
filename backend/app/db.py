@@ -131,7 +131,80 @@ class Run(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class PolicyException(Base):
+    """
+    A time-bounded policy exception (maintenance-window temporary override).
+
+    The exception is bound to an IMMUTABLE baseline snapshot; it never mutates
+    any baseline rule. Its window is the half-open interval [starts_at, ends_at)
+    and its match scope is one (prefix, ge, le) region in exactly one address
+    family (which must equal the baseline's family). Overlapping exceptions
+    resolve by an explicit total ordering (priority desc, then longest/most
+    specific base prefix, then ge, le, id).
+
+    Lifecycle: draft -> pending -> planned -> active -> expired/revoked.
+    When the policy's baseline is superseded, every not-yet-active exception
+    is flagged needs_review and must be re-previewed + reconfirmed against the
+    new baseline before it can take effect.
+    """
+    __tablename__ = "policy_exceptions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    policy_id: Mapped[int] = mapped_column(ForeignKey("policies.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(128))
+
+    # immutable binding
+    baseline_snapshot_id: Mapped[int] = mapped_column(ForeignKey("snapshots.id"))
+    family: Mapped[int] = mapped_column(Integer)                 # 4 or 6
+    prefix: Mapped[str] = mapped_column(String(64))
+    ge: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    le: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    action: Mapped[str] = mapped_column(String(8))               # permit/deny
+    priority: Mapped[int] = mapped_column(Integer, default=100)
+
+    # validity window (UTC; half-open: effective at start, restored at end)
+    starts_at: Mapped[dt.datetime] = mapped_column(DateTime)
+    ends_at: Mapped[dt.datetime] = mapped_column(DateTime)
+
+    reason: Mapped[str] = mapped_column(String(512), default="")
+    requested_by: Mapped[str] = mapped_column(String(64), default="lab")
+    approved_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    approved_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # draft | pending | planned | active | expired | revoked | rejected
+    status: Mapped[str] = mapped_column(String(16), default="draft")
+    # set when a newer baseline snapshot exists for this policy
+    needs_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    review_reason: Mapped[str] = mapped_column(String(256), default="")
+
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow)
+
+
+class ExceptionEvent(Base):
+    """
+    Append-only state history for one exception. The (exception_id, event_type,
+    at_time) key makes repeated / out-of-order timer delivery idempotent: the
+    catch-up sweep after a process restart replays overdue boundaries but can
+    never produce a second activation/expiry history row.
+    """
+    __tablename__ = "exception_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    exception_id: Mapped[int] = mapped_column(
+        ForeignKey("policy_exceptions.id", ondelete="CASCADE"))
+    event_type: Mapped[str] = mapped_column(String(24))
+    from_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    to_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    at_time: Mapped[dt.datetime] = mapped_column(DateTime)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+
+
 def init_db() -> None:
+    # create_all is idempotent: missing tables (e.g. the time-bounded
+    # exception tables added later) are created on existing deployments.
     Base.metadata.create_all(engine)
 
 

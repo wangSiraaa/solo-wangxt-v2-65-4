@@ -131,6 +131,13 @@ def create_snapshot(session: Session, db_pol: dbmod.Policy,
         created_by=created_by,
     )
     session.add(snap)
+    session.flush()
+    # Baseline superseded: not-yet-active exceptions bound to older snapshots
+    # must be re-previewed and reconfirmed. Active exceptions keep running
+    # against the immutable snapshot they were approved with; nothing here
+    # mutates an old snapshot (or its rules).
+    from . import exception_service
+    exception_service.mark_superseded_exceptions(session, db_pol.id, snap)
     session.commit()
     session.refresh(snap)
     return snap

@@ -143,3 +143,37 @@ def cross_validate_snapshot(session: Session, snapshot_id: int,
     session.commit()
     result["run_id"] = run.id
     return result
+
+
+def cross_validate_effective(session: Session, composed, probes: List[str],
+                             node: str = "a", at_iso: Optional[str] = None,
+                             snapshot_id: Optional[int] = None) -> dict:
+    """
+    Verify the CURRENTLY COMPOSED effective policy (baseline snapshot + active
+    exceptions at a given instant) against the isolated local FRR container.
+
+    The composed policy is rendered into a throwaway prefix-list (exceptions
+    at low virtual seqs, baseline at a high seq band — see exceptions.py) and
+    removed after the run; baseline rules themselves are never changed.
+    """
+    result = cross_validate(composed.policy, probes, node=node)
+    # annotate simulator rows with the exception/baseline source of the seq
+    for row in result["rows"]:
+        src = composed.source_of(row["sim_seq"])
+        row["sim_source"] = src
+        fsrc = composed.source_of(row["frr_seq"])
+        row["frr_source"] = fsrc
+    run = dbmod.Run(
+        snapshot_id=snapshot_id, node=node,
+        status=result["status"],
+        detail={"kind": "effective", "at": at_iso,
+                "mismatch_count": result["mismatch_count"],
+                "probes": probes, "mismatches": result["mismatches"],
+                "setup_error": result.get("setup_error"),
+                "active_exceptions": [
+                    {"id": s.id, "name": s.name} for s in composed.exceptions]},
+    )
+    session.add(run)
+    session.commit()
+    result["run_id"] = run.id
+    return result

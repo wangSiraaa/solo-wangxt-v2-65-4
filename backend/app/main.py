@@ -1,5 +1,6 @@
 """FastAPI entrypoint."""
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -10,12 +11,29 @@ from fastapi.staticfiles import StaticFiles
 from .config import CORS_ORIGINS
 from .db import init_db
 from .routers.api import router
+from .routers.exceptions import router as exceptions_router
+from .scheduler import scheduler
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    # catch up on exception boundaries missed while the process was down,
+    # then keep sweeping against the injectable clock.
+    scheduler.start()
+    try:
+        yield
+    finally:
+        await scheduler.stop()
+
 
 app = FastAPI(
     title="Routing Policy Rehearsal Workbench",
-    version="1.0.0",
+    version="1.1.0",
     description="Offline prefix-list / route-policy simulation, shadow and "
-                "semantic-diff analysis, FRR cross-validation.",
+                "semantic-diff analysis, time-bounded maintenance exceptions, "
+                "and FRR cross-validation.",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -27,11 +45,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
-
-
-@app.on_event("startup")
-def _startup():
-    init_db()
+app.include_router(exceptions_router)
 
 
 @app.get("/api")
